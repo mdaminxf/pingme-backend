@@ -1,7 +1,6 @@
 import express, { json, urlencoded } from 'express';
 import { hash as _hash } from 'bcryptjs';
 import jwt from 'jsonwebtoken';
-const { sign } = jwt;
 import cors from 'cors';
 import { Server } from 'socket.io';
 import dotenv from 'dotenv';
@@ -11,7 +10,6 @@ import Users from './models/user.js';
 import Conversation from './models/Conversations.js';
 import Message from './models/Message.js';
 
-// Load environment variables
 dotenv.config();
 
 const app = express();
@@ -20,14 +18,16 @@ const port = process.env.PORT || 8000;
 // Middlewares
 app.use(json());
 app.use(urlencoded({ extended: false }));
-app.use(cors());
+app.use(cors({
+  origin: ['http://localhost:5173', 'https://pingme-eta.vercel.app'],
+  credentials: true
+}));
 
-// Socket.IO setup
+// Socket.IO setup (listens on port 8080 separately)
 const io = new Server(8080, {
   cors: {
-    origin: 'https://pingme-eta.vercel.app', // allow your frontend domain,
+    origin: ['https://pingme-eta.vercel.app', 'http://localhost:5173'],
     credentials: true
-
   }
 });
 
@@ -70,10 +70,9 @@ io.on("connection", (socket) => {
   });
 });
 
-// API Routes
-
+// Routes
 app.get('/', (req, res) => {
-  res.send('Welcome');
+  res.send('PingMe API running...');
 });
 
 app.get('/api/users', async (req, res) => {
@@ -81,7 +80,7 @@ app.get('/api/users', async (req, res) => {
     const users = await Users.find().select('_id username email');
     res.send(users);
   } catch (error) {
-    res.status(500).send({ error: 'An error occurred while retrieving users' });
+    res.status(500).send({ error: 'Failed to retrieve users' });
   }
 });
 
@@ -89,12 +88,12 @@ app.post('/api/signup', async (req, res) => {
   try {
     const { username, email, password } = req.body;
     if (!username || !email || !password) {
-      return res.status(400).send('Required field is invalid');
+      return res.status(400).send('All fields are required');
     }
 
     const isAlreadyExist = await Users.findOne({ email });
     if (isAlreadyExist) {
-      return res.status(400).send('User Already Exists');
+      return res.status(400).send('User already exists');
     }
 
     const newUser = new Users({ username, email });
@@ -103,7 +102,7 @@ app.post('/api/signup', async (req, res) => {
 
       newUser.password = hash;
       await newUser.save();
-      res.status(200).send('User Signup Successfully');
+      res.status(200).send('User signed up successfully');
     });
   } catch (err) {
     console.error(err);
@@ -114,21 +113,26 @@ app.post('/api/signup', async (req, res) => {
 app.post('/api/login', async (req, res) => {
   try {
     const { email, password } = req.body;
-    if (!email || !password) return res.status(400).send('Required field is empty');
+    if (!email || !password) return res.status(400).send('Email and password required');
 
     const user = await Users.findOne({ email });
-    if (!user) return res.status(400).send("User not found");
+    if (!user) return res.status(400).send('User not found');
 
     const payload = { userId: user._id, email: user.email };
-    const JWT_SECRET_KEY = process.env.JWT_SECRET || 'default_secret_key';
+    const token = jwt.sign(payload, process.env.JWT_SECRET || 'default_secret_key', {
+      expiresIn: '24h',
+    });
 
-    sign(payload, JWT_SECRET_KEY, { expiresIn: 84600 }, async (err, token) => {
-      if (err) return res.status(500).send('Token generation failed');
+    user.token = token;
+    await user.save();
 
-      user.token = token;
-      await user.save();
-
-      res.status(200).json({ user: { id: user._id, email: user.email, username: user.username }, token });
+    res.status(200).json({
+      user: {
+        id: user._id,
+        username: user.username,
+        email: user.email
+      },
+      token
     });
   } catch (err) {
     console.error(err);
@@ -139,7 +143,7 @@ app.post('/api/login', async (req, res) => {
 app.post('/api/conversation', async (req, res) => {
   try {
     const { senderId, receiverId } = req.body;
-    const existingConversation = await findOne({
+    const existingConversation = await Conversation.findOne({
       members: { $all: [senderId, receiverId] }
     });
 
@@ -149,7 +153,7 @@ app.post('/api/conversation', async (req, res) => {
 
     const newConversation = new Conversation({ members: [senderId, receiverId] });
     await newConversation.save();
-    res.status(201).json({ message: 'Conversation created successfully', conversation: newConversation });
+    res.status(201).json({ message: 'Conversation created', conversation: newConversation });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to create conversation' });
@@ -166,12 +170,8 @@ app.get('/api/conversation/:userId', async (req, res) => {
         const receiverId = conversation.members.find(
           (member) => member.toString() !== userId
         );
-
-        if (!receiverId) return null;
-
         const user = await Users.findById(receiverId, 'email username');
         if (!user) return null;
-
         return {
           user: { id: user._id, email: user.email, username: user.username },
           conversationId: conversation._id,
@@ -179,7 +179,6 @@ app.get('/api/conversation/:userId', async (req, res) => {
       })
     );
 
-    // Filter out null results
     res.status(200).json(conversationUserData.filter(Boolean));
   } catch (err) {
     console.error('Error fetching conversations:', err);
@@ -187,12 +186,10 @@ app.get('/api/conversation/:userId', async (req, res) => {
   }
 });
 
-
 app.post("/api/message", async (req, res) => {
   try {
     const { conversationId, senderId, message, receiverId } = req.body;
 
-    // Create the new message and automatically set 'createdAt'
     const newMessage = await Message.create({
       conversationId,
       senderId,
@@ -200,54 +197,48 @@ app.post("/api/message", async (req, res) => {
       receiverId,
     });
 
-    // Respond with the newly created message, including the 'createdAt' field
     res.status(200).json({
       id: newMessage._id,
       conversationId: newMessage.conversationId,
       senderId: newMessage.senderId,
       message: newMessage.message,
-      createdAt: newMessage.createdAt, // Include 'createdAt' in the response
+      createdAt: newMessage.createdAt,
     });
   } catch (error) {
     console.error("Error handling message request:", error);
     res.status(500).json({ error: "Failed to send message" });
   }
 });
+
 app.get('/api/message/:conversationId', async (req, res) => {
   try {
     const conversationId = req.params.conversationId;
-    if (!conversationId) return res.status(400).send('Conversation ID is required');
-    
-    // Fetch all messages for a specific conversation
     const messages = await Message.find({ conversationId });
 
-    // Optional: Add additional logic to populate user details for each message
     const messageData = await Promise.all(
       messages.map(async (message) => {
         const user = await Users.findById(message.senderId, 'email username');
         return {
           user: { id: user._id, email: user.email, username: user.username },
           message: message.message,
-          conversationId: conversationId,
-          createdAt: message.createdAt, // Include 'createdAt' in the response
+          conversationId,
+          createdAt: message.createdAt,
         };
       })
     );
 
-    res.status(200).json(messageData);  // Return messages to frontend
+    res.status(200).json(messageData);
   } catch (err) {
     console.error('Error fetching messages:', err);
     res.status(500).json({ error: 'Failed to fetch messages' });
   }
 });
 
-
-
 // Start server after DB connection
 conn.then(() => {
   app.listen(port, () => {
-    console.log(`Server listening on port ${port}`);
+    console.log(`Server is running on port ${port}`);
   });
 }).catch(err => {
-  console.error('Database connection failed:', err);
+  console.error('Failed to connect to database:', err);
 });
