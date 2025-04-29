@@ -25,7 +25,9 @@ app.use(cors());
 // Socket.IO setup
 const io = new Server(8080, {
   cors: {
-    origin: 'http://localhost:5173',
+    origin: 'https://pingme-eta.vercel.app', // allow your frontend domain,
+    credentials: true
+
   }
 });
 
