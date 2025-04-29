@@ -18,10 +18,26 @@ const port = process.env.PORT || 8000;
 // Middlewares
 app.use(json());
 app.use(urlencoded({ extended: false }));
+const allowedOrigins = [
+  'https://pingme-eta.vercel.app',
+  'http://localhost:5173'
+];
+
 app.use(cors({
-  origin: ['http://localhost:5173', 'https://pingme-eta.vercel.app'],
-  credentials: true
+  origin: function (origin, callback) {
+    // allow requests with no origin like mobile apps or curl
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    } else {
+      return callback(new Error('CORS not allowed for this origin'), false);
+    }
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
 }));
+app.options('*', cors()); // pre-flight for all routes
 
 // Socket.IO setup (listens on port 8080 separately)
 const io = new Server(8080, {
